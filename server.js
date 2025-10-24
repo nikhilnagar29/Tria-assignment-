@@ -37,14 +37,16 @@ const generateMockData = () => {
 
     const firstName = faker.person.firstName();
     const lastName = faker.person.lastName();
+    const name = `${firstName} ${lastName}`; // Generate name first
 
     newContacts.push({
       id: nanoid(10),
-      name: `${firstName} ${lastName}`,
+      name: name, // Use generated name
       phone: faker.phone.number(),
+      // Ensure email generation uses the same name parts for consistency
       email: faker.internet.email({ firstName, lastName }).toLowerCase(),
-      imageUrl: Math.random() > 0.6 ? faker.image.avatar() : null, // Increased chance of avatar
-      isFavorite: Math.random() > 0.9, // 10% are favorite
+      imageUrl: Math.random() > 0.3 ? faker.image.avatar() : null,
+      isFavorite: Math.random() > 0.9,
       tags: tags,
     });
   }
@@ -55,35 +57,33 @@ const generateMockData = () => {
 // Generate data on server start
 generateMockData();
 
-// Health check endpoint for Render keep-alive
+// Health check endpoint
 app.get("/health", (req, res) => {
   res.status(200).json({ status: "ok", timestamp: new Date().toISOString() });
 });
 
 // --- API Endpoints ---
 
-// [GET] /api/tags - Returns available tags
+// [GET] /api/tags
 app.get('/api/tags', (req, res) => {
   res.json(availableTags);
 });
 
-// [POST] /api/tags - Creates a new tag
+// [POST] /api/tags
 app.post('/api/tags', (req, res) => {
   const { tagName } = req.body;
   if (!tagName || typeof tagName !== 'string' || !tagName.trim()) {
     return res.status(400).json({ message: 'Valid tagName (string) is required.' });
   }
-
   const newTag = tagName.trim();
-  // Case-insensitive check
   if (!availableTags.some(tag => tag.toLowerCase() === newTag.toLowerCase())) {
     availableTags.push(newTag);
-    availableTags.sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' })); // Case-insensitive sort
+    availableTags.sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
     console.log(`POST /api/tags - Added: ${newTag}`);
-    res.status(201).json(availableTags); // Return updated list
+    res.status(201).json(availableTags);
   } else {
     console.log(`POST /api/tags - Tag already exists: ${newTag}`);
-    res.status(200).json(availableTags); // Tag exists, return current list
+    res.status(200).json(availableTags);
   }
 });
 
@@ -91,28 +91,42 @@ app.post('/api/tags', (req, res) => {
 app.get('/api/contacts', (req, res) => {
   const page = parseInt(req.query.page) || 1;
   const limit = parseInt(req.query.limit) || 50;
-  const search = (req.query.search || '').toLowerCase().trim();
-  const tag = req.query.tag; // 'All', 'Favourite', or a custom tag
+  // Ensure search term is always defined, lowercase, and trimmed
+  const searchTerm = (req.query.search || '').toLowerCase().trim();
+  const tag = req.query.tag;
 
-  let results = [...contacts]; // Start with a copy of all contacts
+  let results = [...contacts]; // Start with a copy
 
-  // --- Apply Search Filter ---
-  if (search) {
-    results = results.filter(contact =>
-      (contact.name && contact.name.toLowerCase().includes(search)) ||
-      (contact.phone && contact.phone.replace(/\D/g, '').includes(search.replace(/\D/g, ''))) || // Match digits
-      (contact.email && contact.email.toLowerCase().includes(search))
-    );
-  }
+  // --- Apply Filters ---
+  if (searchTerm || (tag && tag !== 'All')) {
+    results = results.filter(contact => {
+      let matchesSearch = true; // Assume true if no search term
+      let matchesTag = true;    // Assume true if tag is 'All' or not provided
 
-  // --- Apply Tag Filter ---
-  if (tag && tag !== 'All') {
-    if (tag === 'Favourite') {
-      results = results.filter(contact => contact.isFavorite);
-    } else {
-      // Ensure contact.tags exists and is an array before calling includes
-      results = results.filter(contact => Array.isArray(contact.tags) && contact.tags.includes(tag));
-    }
+      // Check search criteria if searchTerm exists
+      if (searchTerm) {
+        const nameMatch = contact.name && contact.name.toLowerCase().includes(searchTerm);
+        // Clean phone numbers for comparison
+        const phoneDigits = (contact.phone || '').replace(/\D/g, '');
+        const searchDigits = searchTerm.replace(/\D/g, '');
+        const phoneMatch = phoneDigits && searchDigits && phoneDigits.includes(searchDigits);
+        const emailMatch = contact.email && contact.email.toLowerCase().includes(searchTerm);
+
+        matchesSearch = !!(nameMatch || phoneMatch || emailMatch); // Use !! to convert truthy/falsy to boolean
+      }
+
+      // Check tag criteria if a specific tag is selected
+      if (tag && tag !== 'All') {
+        if (tag === 'Favourite') {
+          matchesTag = contact.isFavorite === true;
+        } else {
+          matchesTag = Array.isArray(contact.tags) && contact.tags.includes(tag);
+        }
+      }
+
+      // Contact must match both active filters
+      return matchesSearch && matchesTag;
+    });
   }
 
   // --- Apply Pagination ---
@@ -122,7 +136,7 @@ app.get('/api/contacts', (req, res) => {
   const paginatedContacts = results.slice(startIndex, endIndex);
 
   console.log(
-    `GET /api/contacts | page=${page} | limit=${limit} | search="${search}" | tag="${tag}" | Found: ${totalCount} | Sent: ${paginatedContacts.length}`
+    `GET /api/contacts | page=${page} | limit=${limit} | search="${searchTerm}" | tag="${tag}" | Found: ${totalCount} | Sent: ${paginatedContacts.length}`
   );
 
   res.json({
@@ -135,41 +149,27 @@ app.get('/api/contacts', (req, res) => {
 
 // [POST] /api/contacts - Creates a new contact
 app.post('/api/contacts', (req, res) => {
-    // Basic validation
     const { name, phone, email = null, imageUrl = null, tags = [] } = req.body;
     if (!name || !phone || !name.trim() || !phone.trim()) {
         return res.status(400).json({ message: 'Name and phone are required.' });
     }
-
-    // Ensure email is valid or null
     const validEmail = email && typeof email === 'string' && email.includes('@') ? email.trim().toLowerCase() : null;
     const validImageUrl = imageUrl && typeof imageUrl === 'string' && imageUrl.startsWith('http') ? imageUrl.trim() : null;
-    // Ensure tags is an array of strings
     const validTags = Array.isArray(tags) ? tags.filter(tag => typeof tag === 'string' && tag.trim()).map(tag => tag.trim()) : [];
-
     const newContact = {
-        id: nanoid(10),
-        name: name.trim(),
-        phone: phone.trim(),
-        email: validEmail,
-        imageUrl: validImageUrl,
-        isFavorite: false,
-        tags: validTags,
+        id: nanoid(10), name: name.trim(), phone: phone.trim(), email: validEmail,
+        imageUrl: validImageUrl, isFavorite: false, tags: validTags,
     };
-
     contacts.push(newContact);
-    contacts = sortContacts(contacts); // Keep the list sorted
-
+    contacts = sortContacts(contacts);
     console.log(`POST /api/contacts - Added: ${newContact.name} (ID: ${newContact.id})`);
-    res.status(201).json(newContact); // Return the created contact
+    res.status(201).json(newContact);
 });
 
-
-// [PUT] /api/contacts/:id - Updates a contact (isFavorite or tags)
+// [PUT] /api/contacts/:id - Updates a contact
 app.put('/api/contacts/:id', (req, res) => {
   const { id } = req.params;
-  const { isFavorite, tags } = req.body; // Expecting isFavorite (boolean) OR tags (string[])
-
+  const { isFavorite, tags } = req.body;
   let contactFound = false;
   let updatedContact = null;
 
@@ -177,19 +177,10 @@ app.put('/api/contacts/:id', (req, res) => {
     if (contact.id === id) {
       contactFound = true;
       const updates = {};
-      if (typeof isFavorite === 'boolean') {
-        updates.isFavorite = isFavorite;
-        console.log(`PUT /api/contacts/${id} - Setting isFavorite to ${isFavorite}`);
-      }
+      if (typeof isFavorite === 'boolean') updates.isFavorite = isFavorite;
       if (Array.isArray(tags)) {
-        // Validate tags are strings
-        updates.tags = tags.filter(tag => typeof tag === 'string' && tag.trim()).map(tag => tag.trim());
-        console.log(`PUT /api/contacts/${id} - Setting tags to [${updates.tags.join(', ')}]`);
-      } else if (tags !== undefined) {
-         // If tags is provided but not an array, it's likely an error or clearing tags
-         console.warn(`PUT /api/contacts/${id} - Received non-array for tags, assuming clear tags:`, tags);
-         updates.tags = [];
-      }
+          updates.tags = tags.filter(tag => typeof tag === 'string' && tag.trim()).map(tag => tag.trim());
+      } else if (tags !== undefined) updates.tags = []; // Clear tags if non-array provided
 
       updatedContact = { ...contact, ...updates };
       return updatedContact;
@@ -197,12 +188,10 @@ app.put('/api/contacts/:id', (req, res) => {
     return contact;
   });
 
-   // Re-sort if tags were updated, as name might not be unique for sorting anymore
-   if (updatedContact && tags !== undefined) {
-     contacts = sortContacts(contacts);
-   }
+   if (updatedContact && tags !== undefined) contacts = sortContacts(contacts);
 
   if (contactFound && updatedContact) {
+    console.log(`PUT /api/contacts/${id} - Updated contact`);
     res.json(updatedContact);
   } else {
      console.error(`PUT /api/contacts/${id} - Contact not found`);
@@ -210,34 +199,29 @@ app.put('/api/contacts/:id', (req, res) => {
   }
 });
 
-
 // [DELETE] /api/contacts/:id - Deletes a contact
 app.delete('/api/contacts/:id', (req, res) => {
   const { id } = req.params;
   const initialLength = contacts.length;
-  const contactToDelete = contacts.find(c => c.id === id); // Find before filtering
+  const contactToDelete = contacts.find(c => c.id === id);
 
   if (!contactToDelete) {
      console.error(`DELETE /api/contacts/${id} - Contact not found`);
     return res.status(404).json({ message: 'Contact not found' });
   }
-
   contacts = contacts.filter((c) => c.id !== id);
-
   if (contacts.length < initialLength) {
     console.log(`DELETE /api/contacts/${id} - Removed: ${contactToDelete.name}`);
-    res.json(contactToDelete); // Return the deleted contact object
+    res.json(contactToDelete);
   } else {
-     // This case should ideally not happen if findIndex found it, but good practice
      console.error(`DELETE /api/contacts/${id} - Failed to remove contact`);
     res.status(500).json({ message: 'Failed to delete contact' });
   }
 });
 
-
 // --- Server Start & Keep-Alive ---
 const axios = require("axios");
-const KEEP_ALIVE_INTERVAL = 14 * 60 * 1000; // Ping every 14 minutes for Render free tier
+const KEEP_ALIVE_INTERVAL = 14 * 60 * 1000;
 
 if (process.env.RENDER_EXTERNAL_URL) {
   const healthCheckUrl = `${process.env.RENDER_EXTERNAL_URL}/health`;
@@ -251,7 +235,6 @@ if (process.env.RENDER_EXTERNAL_URL) {
     }
   }, KEEP_ALIVE_INTERVAL);
 }
-
 
 app.listen(PORT, () => {
   console.log(`🚀 Contact API Server running at http://localhost:${PORT}`);
