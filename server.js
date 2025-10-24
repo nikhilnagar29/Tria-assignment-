@@ -104,7 +104,7 @@ app.get('/api/contacts', (req, res) => {
         (c) =>
           c.name.toLowerCase().includes(search) ||
           c.phone.includes(search) ||
-          c.email.toLowerCase().includes(search)
+          (c.email && c.email.toLowerCase().includes(search))
       )
     : [...contacts]; // Use a copy
 
